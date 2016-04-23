@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 PRImA Research Lab, University of Salford, United Kingdom
+ * Copyright 2015 PRImA Research Lab, University of Salford, United Kingdom
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -199,7 +199,7 @@ public class PageConverter {
 	 * @param textFilterRules A collection of String variables, each containing a filter rule in the variable value. 
 	 * @param page Page object with text elements to apply the filter to.
 	 */
-	void runTextFilter(VariableMap textFilterRules, Page page) {
+	public static void runTextFilter(VariableMap textFilterRules, Page page) {
 		final TextFilter textFilter = new TextFilter(textFilterRules);
 		final ContentObjectProcessor processor = new ContentObjectProcessor() {
 			@Override
