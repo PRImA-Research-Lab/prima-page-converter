@@ -18,6 +18,8 @@ package org.primaresearch.dla.page.converter;
 import java.io.File;
 
 import org.primaresearch.dla.page.Page;
+import org.primaresearch.dla.page.io.FileInput;
+import org.primaresearch.dla.page.io.json.GoogleJsonPageReader;
 import org.primaresearch.dla.page.io.xml.PageXmlInputOutput;
 import org.primaresearch.dla.page.layout.physical.ContentObject;
 import org.primaresearch.dla.page.layout.physical.ContentObjectProcessor;
@@ -59,12 +61,19 @@ public class PageConverter {
 		
 		//Parse arguments
 		String sourceFilename = null;
+		boolean json = false;
 		String targetFilename = null;
 		String gtsidPattern = null;
 		String textFilterRuleFile = null;
 		for (int i=0; i<args.length; i++) {
 			if ("-source-xml".equals(args[i])) {
 				i++;
+				json = false;
+				sourceFilename = args[i];
+			}
+			else if ("-source-json".equals(args[i])) {
+				i++;
+				json = true;
 				sourceFilename = args[i];
 			}
 			else if ("-target-xml".equals(args[i])) {
@@ -103,7 +112,7 @@ public class PageConverter {
 		}
 
 		//Run conversion
-		converter.run(sourceFilename, targetFilename);
+		converter.run(sourceFilename, targetFilename, json);
 	}
 
 	/**
@@ -117,6 +126,8 @@ public class PageConverter {
 		System.out.println("Arguments:");
 		System.out.println("");
 		System.out.println("  -source-xml <XML file>        PAGE XML file to convert.");
+		System.out.println("     OR");
+		System.out.println("  -source-json <JSON file>      JSON file to convert (e.g. Google Cloud Vision output).");
 		System.out.println("");
 		System.out.println("  -target-xml <XML file>        Output PAGE XML file.");
 		System.out.println("");
@@ -144,11 +155,14 @@ public class PageConverter {
 	 * @param sourceFilename File path of input PAGE XML
 	 * @param targetFilename File path to output PAGE XML
 	 */
-	public void run(String sourceFilename, String targetFilename) {
+	public void run(String sourceFilename, String targetFilename, boolean json) {
 		//Load
 		Page page = null;
 		try {
-			page = PageXmlInputOutput.readPage(sourceFilename);
+			if (json)
+				page = new GoogleJsonPageReader().read(new FileInput(new File(sourceFilename)));
+			else //XML
+				page = PageXmlInputOutput.readPage(sourceFilename);
 		} catch (Exception e) {
 			System.err.println("Could not load source PAGE XML file: "+sourceFilename);
 			e.printStackTrace();
