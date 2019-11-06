@@ -19,8 +19,12 @@ import java.io.File;
 
 import org.primaresearch.dla.page.Page;
 import org.primaresearch.dla.page.io.FileInput;
+import org.primaresearch.dla.page.io.FileTarget;
+import org.primaresearch.dla.page.io.PageWriter;
 import org.primaresearch.dla.page.io.json.GoogleJsonPageReader;
 import org.primaresearch.dla.page.io.xml.PageXmlInputOutput;
+import org.primaresearch.dla.page.io.xml.PageXmlModelAndValidatorProvider;
+import org.primaresearch.dla.page.io.xml.XmlPageWriter_Alto;
 import org.primaresearch.dla.page.layout.physical.ContentObject;
 import org.primaresearch.dla.page.layout.physical.ContentObjectProcessor;
 import org.primaresearch.dla.page.layout.physical.text.TextObject;
@@ -29,7 +33,10 @@ import org.primaresearch.dla.page.layout.physical.text.impl.TextLine;
 import org.primaresearch.dla.page.layout.physical.text.impl.TextRegion;
 import org.primaresearch.dla.page.layout.physical.text.impl.Word;
 import org.primaresearch.io.FormatVersion;
+import org.primaresearch.io.UnsupportedFormatVersionException;
 import org.primaresearch.io.xml.XmlFormatVersion;
+import org.primaresearch.io.xml.XmlModelAndValidatorProvider;
+import org.primaresearch.io.xml.XmlValidator;
 import org.primaresearch.io.xml.variable.XmlVariableFileReader;
 import org.primaresearch.shared.variable.VariableMap;
 import org.primaresearch.text.filter.TextFilter;
@@ -58,6 +65,7 @@ public class PageConverter {
 		}
 
 		PageConverter converter = new PageConverter();
+		boolean alto = false;
 		
 		//Parse arguments
 		String sourceFilename = null;
@@ -86,7 +94,10 @@ public class PageConverter {
 			}
 			else if ("-convert-to".equals(args[i])) {
 				i++;
-				converter.setTargetSchema(args[i]);
+				if ("ALTO".equals(args[i]))
+					alto = true;
+				else
+					converter.setTargetSchema(args[i]);
 			}
 			else if ("-text-filter".equals(args[i])) {
 				i++;
@@ -112,7 +123,7 @@ public class PageConverter {
 		}
 
 		//Run conversion
-		converter.run(sourceFilename, targetFilename, json);
+		converter.run(sourceFilename, targetFilename, json, alto);
 	}
 
 	/**
@@ -134,8 +145,12 @@ public class PageConverter {
 		System.out.println("  -convert-to <schema version>  Target PAGE schema version. (optional)");
 		System.out.println("              Available versions:");
 		System.out.println("                 LATEST");
+		System.out.println("                 2018-07-15");
+		System.out.println("                 2017-07-15");
+		System.out.println("                 2016-07-15");
 		System.out.println("                 2013-07-15");
 		System.out.println("                 2010-03-19");
+		System.out.println("                 ALTO");
 		System.out.println("");
 		System.out.println("  -set-gtsid <ID|prefix[start,end]>   To set the the GtsId field. (optional)");
 		System.out.println("         Usage:");
@@ -154,8 +169,10 @@ public class PageConverter {
 	 * Runs the conversion
 	 * @param sourceFilename File path of input PAGE XML
 	 * @param targetFilename File path to output PAGE XML
+	 * @param json JSON input?
+	 * @param altoOutput ALTO XML output instad of PAGE?
 	 */
-	public void run(String sourceFilename, String targetFilename, boolean json) {
+	public void run(String sourceFilename, String targetFilename, boolean json, boolean altoOutput) {
 		//Load
 		Page page = null;
 		try {
@@ -184,25 +201,51 @@ public class PageConverter {
 			runTextFilter(textFilterRules, page);
 		}
 		
-		//Convert to specified schema version
-		if (targetformat != null) {
+		if (altoOutput) {
+			//Write ALTO	
 			try {
-				//ConverterHub.convert(page, XmlInputOutput.getInstance().getFormatModel(targetformat)); 
-				page.setFormatVersion(PageXmlInputOutput.getInstance().getFormatModel(targetformat));
-			} catch(Exception exc) {
-				System.err.println("Could not convert to target XML schema format.");
+				XmlModelAndValidatorProvider validatorProvider = new PageXmlModelAndValidatorProvider();
+				XmlValidator validator = null;
+				if (validatorProvider != null) {
+					validator = validatorProvider.getValidator(new XmlFormatVersion("http://www.loc.gov/standards/alto/ns-v4#"));
+				}
+	
+				//Valid
+				PageWriter writer = new XmlPageWriter_Alto(validator);
+		
+				try {
+					if (!writer.write(page, new FileTarget(new File(targetFilename))))
+						System.err.println("Error writing target ALTO XML file");
+				} catch (UnsupportedFormatVersionException e) {
+					System.err.println("Could not save target ALTO XML file: "+targetFilename);
+					e.printStackTrace();
+				}
+			} catch (Exception exc) {
+				System.err.println("Could not initialise ALTO XML writer");
 				exc.printStackTrace();
 			}
 		}
-		
-		//Write
-		try {
-			if (!PageXmlInputOutput.writePage(page, targetFilename))
-				System.err.println("Error writing target PAGE XML file");
-		} catch (Exception e) {
-			System.err.println("Could not save target PAGE XML file: "+targetFilename);
-			e.printStackTrace();
+		else {
+			//Convert to specified schema version
+			if (targetformat != null) {
+				try {
+					//ConverterHub.convert(page, XmlInputOutput.getInstance().getFormatModel(targetformat)); 
+					page.setFormatVersion(PageXmlInputOutput.getInstance().getFormatModel(targetformat));
+				} catch(Exception exc) {
+					System.err.println("Could not convert to target XML schema format.");
+					exc.printStackTrace();
+				}
+			}
+			//Write PAGE
+			try {
+				if (!PageXmlInputOutput.writePage(page, targetFilename))
+					System.err.println("Error writing target PAGE XML file");
+			} catch (Exception e) {
+				System.err.println("Could not save target PAGE XML file: "+targetFilename);
+				e.printStackTrace();
+			}
 		}
+		
 	}
 
 	/**
