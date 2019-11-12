@@ -16,6 +16,8 @@
 package org.primaresearch.dla.page.converter;
 
 import java.io.File;
+import java.util.LinkedList;
+import java.util.List;
 
 import org.primaresearch.dla.page.Page;
 import org.primaresearch.dla.page.io.FileInput;
@@ -25,8 +27,12 @@ import org.primaresearch.dla.page.io.json.GoogleJsonPageReader;
 import org.primaresearch.dla.page.io.xml.PageXmlInputOutput;
 import org.primaresearch.dla.page.io.xml.PageXmlModelAndValidatorProvider;
 import org.primaresearch.dla.page.io.xml.XmlPageWriter_Alto;
+import org.primaresearch.dla.page.layout.PageLayout;
 import org.primaresearch.dla.page.layout.physical.ContentObject;
 import org.primaresearch.dla.page.layout.physical.ContentObjectProcessor;
+import org.primaresearch.dla.page.layout.physical.Region;
+import org.primaresearch.dla.page.layout.physical.text.LowLevelTextContainer;
+import org.primaresearch.dla.page.layout.physical.text.LowLevelTextObject;
 import org.primaresearch.dla.page.layout.physical.text.TextObject;
 import org.primaresearch.dla.page.layout.physical.text.impl.Glyph;
 import org.primaresearch.dla.page.layout.physical.text.impl.TextLine;
@@ -38,9 +44,11 @@ import org.primaresearch.io.xml.XmlFormatVersion;
 import org.primaresearch.io.xml.XmlModelAndValidatorProvider;
 import org.primaresearch.io.xml.XmlValidator;
 import org.primaresearch.io.xml.variable.XmlVariableFileReader;
+import org.primaresearch.maths.geometry.Polygon;
 import org.primaresearch.shared.variable.VariableMap;
 import org.primaresearch.text.filter.TextFilter;
 import org.primaresearch.text.filter.TextFilter.TextObjectTypeFilterCallback;
+
 
 /**
  * Converter tool for PAGE XML.
@@ -49,6 +57,9 @@ import org.primaresearch.text.filter.TextFilter.TextObjectTypeFilterCallback;
  *
  */
 public class PageConverter {
+
+	private static final String NEG_COORDS_MODE_REMOVE_OBJECT = "removeObj";
+	//private static final String NEG_COORDS_MODE_TO_ZERO = "toZero";
 
 	private String gtsidToSet = null;
 	private FormatVersion targetformat = null;
@@ -73,6 +84,7 @@ public class PageConverter {
 		String targetFilename = null;
 		String gtsidPattern = null;
 		String textFilterRuleFile = null;
+		String negCoordsMode = null;
 		for (int i=0; i<args.length; i++) {
 			if ("-source-xml".equals(args[i])) {
 				i++;
@@ -103,6 +115,10 @@ public class PageConverter {
 				i++;
 				textFilterRuleFile = args[i];
 			}
+			else if ("-neg-coords".equals(args[i])) {
+				i++;
+				negCoordsMode = args[i];
+			}
 			else {
 				System.err.println("Unknown argument: "+args[i]);
 			}
@@ -123,7 +139,7 @@ public class PageConverter {
 		}
 
 		//Run conversion
-		converter.run(sourceFilename, targetFilename, json, alto);
+		converter.run(sourceFilename, targetFilename, json, alto, negCoordsMode);
 	}
 
 	/**
@@ -163,6 +179,12 @@ public class PageConverter {
 		System.out.println("");
 		System.out.println("  -text-filter <XML file>   Applies filter to the text content. (optional)");
 		System.out.println("         For instructions on how to define filter rules see the user guide.");
+		System.out.println("");
+		System.out.println("  -neg-coords <mode>   Handle negative coordinates (optional)");
+		System.out.println("       Modes:");
+		System.out.println("         removeObj - If an object contains one or more points with negative");
+		System.out.println("                     coordinates, remove the whole object. ");
+		System.out.println("         toZero    - Change negative values to 0");
 	}
 	
 	/**
@@ -170,9 +192,9 @@ public class PageConverter {
 	 * @param sourceFilename File path of input PAGE XML
 	 * @param targetFilename File path to output PAGE XML
 	 * @param json JSON input?
-	 * @param altoOutput ALTO XML output instad of PAGE?
+	 * @param altoOutput ALTO XML output instead of PAGE?
 	 */
-	public void run(String sourceFilename, String targetFilename, boolean json, boolean altoOutput) {
+	public void run(String sourceFilename, String targetFilename, boolean json, boolean altoOutput, String negCoordsMode) {
 		//Load
 		Page page = null;
 		try {
@@ -199,6 +221,11 @@ public class PageConverter {
 		//Text filter
 		if (textFilterRules != null) {
 			runTextFilter(textFilterRules, page);
+		}
+		
+		//Handle negative coordinates?
+		if (negCoordsMode != null) {
+			handleNegativeCoordinates(page, negCoordsMode);
 		}
 		
 		if (altoOutput) {
@@ -312,7 +339,7 @@ public class PageConverter {
 	 * Note: The ID has to be conform to the XML ID convention (start with letter, ...).
 	 * @param pattern A specific ID or [start,end], where 'start' is the index of the first character
 	 * and 'end' the index of the last character within the given filename (index starts with 0).
-	 * @param filename Required if the ID is to be extracted.
+	 * @param filepath Required if the ID is to be extracted.
 	 */
 	public void setGtsId(String pattern, String filepath) {
 		try {
@@ -366,6 +393,106 @@ public class PageConverter {
 	 */
 	public void setTextFilterRules(VariableMap textFilterRules) {
 		this.textFilterRules = textFilterRules;
+	}
+	
+	/** Handle negative coordinates of any object with polygon. */
+	public static void handleNegativeCoordinates(Page page, String negCoordsMode) {
+		boolean deleteObjects = NEG_COORDS_MODE_REMOVE_OBJECT.equals(negCoordsMode);
+		PageLayout layout = page.getLayout();
+		
+		//Printspace
+		if (layout.getPrintSpace() != null && hasNegativeCoordinates(layout.getPrintSpace().getCoords())) {
+			if (deleteObjects)
+				layout.setPrintSpace(null);
+			else
+				correctNegativeCoordinates(layout.getPrintSpace().getCoords());
+		}
+		//Border
+		if (layout.getBorder() != null && hasNegativeCoordinates(layout.getBorder().getCoords())) {
+			if (deleteObjects)
+				layout.setBorder(null);
+			else
+				correctNegativeCoordinates(layout.getBorder().getCoords());
+		}
+		//Regions
+		List<Region> toDelete = new LinkedList<Region>();
+		for (int i=0; i<layout.getRegionCount(); i++) {
+			Region region = layout.getRegion(i);
+			if (hasNegativeCoordinates(region.getCoords())) {
+				if (deleteObjects)
+					toDelete.add(region);
+				else
+					correctNegativeCoordinates(region.getCoords());
+			}
+			handleNegativeCoordinatesOfNestedRegions(region, deleteObjects);
+			if (region instanceof TextRegion)
+				handleNegativeCoordinatesOfTextObjects((TextRegion)region, deleteObjects);
+		}
+		for (Region region : toDelete)
+			layout.removeRegion(region.getId());
+	}
+	
+	/** Handle negative coordinates of nested regions (recursive) */
+	private static void handleNegativeCoordinatesOfNestedRegions(Region region, boolean deleteObjects) {
+		List<Region> toDelete = new LinkedList<Region>();
+		for (int i=0; i<region.getRegionCount(); i++) {
+			Region child = region.getRegion(i);
+			if (hasNegativeCoordinates(child.getCoords())) {
+				if (deleteObjects)
+					toDelete.add(child);
+				else
+					correctNegativeCoordinates(child.getCoords());
+			}
+			handleNegativeCoordinatesOfNestedRegions(child, deleteObjects);
+			if (region instanceof TextRegion)
+				handleNegativeCoordinatesOfTextObjects((TextRegion)region, deleteObjects);
+		}
+		for (Region child : toDelete)
+			region.removeRegion(child);
+	}
+	
+	/** Handle negative coordinates of child text objects (recursive) */
+	private static void handleNegativeCoordinatesOfTextObjects(LowLevelTextContainer container, boolean deleteObjects) {
+		List<LowLevelTextObject> toDelete = new LinkedList<LowLevelTextObject>();
+		for (int i=0; i<container.getTextObjectCount(); i++) {
+			LowLevelTextObject child = container.getTextObject(i);
+			if (hasNegativeCoordinates(child.getCoords())) {
+				if (deleteObjects)
+					toDelete.add(child);
+				else
+					correctNegativeCoordinates(child.getCoords());
+			}
+			
+			if (child instanceof LowLevelTextContainer)
+				handleNegativeCoordinatesOfTextObjects((LowLevelTextContainer)child, deleteObjects);
+		}
+		for (LowLevelTextObject child : toDelete)
+			container.removeTextObject(child.getId());
+	}
+	
+	/** Returns true if at least one coordinate is negative */
+	private static boolean hasNegativeCoordinates(Polygon polygon) {
+		if (polygon == null)
+			return false;
+		
+		for (int i=0; i<polygon.getSize(); i++) {
+			if (polygon.getPoint(i).x < 0 || polygon.getPoint(i).y < 0)
+				return true;
+		}
+		return false;
+	}
+	
+	/** Changes negative coordinates to zero */
+	private static void correctNegativeCoordinates(Polygon polygon) {
+		if (polygon == null)
+			return;
+		
+		for (int i=0; i<polygon.getSize(); i++) {
+			if (polygon.getPoint(i).x < 0)
+				polygon.getPoint(i).x = 0;
+			if (polygon.getPoint(i).y < 0)
+				polygon.getPoint(i).y = 0;
+		}
 	}
 
 	
