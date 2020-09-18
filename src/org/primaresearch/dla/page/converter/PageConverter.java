@@ -20,6 +20,7 @@ import java.util.LinkedList;
 import java.util.List;
 
 import org.primaresearch.dla.page.Page;
+import org.primaresearch.dla.page.Page.MeasurementUnit;
 import org.primaresearch.dla.page.io.FileInput;
 import org.primaresearch.dla.page.io.FileTarget;
 import org.primaresearch.dla.page.io.PageWriter;
@@ -38,13 +39,18 @@ import org.primaresearch.dla.page.layout.physical.text.impl.Glyph;
 import org.primaresearch.dla.page.layout.physical.text.impl.TextLine;
 import org.primaresearch.dla.page.layout.physical.text.impl.TextRegion;
 import org.primaresearch.dla.page.layout.physical.text.impl.Word;
+import org.primaresearch.dla.page.layout.shared.GeometricObject;
 import org.primaresearch.io.FormatVersion;
 import org.primaresearch.io.UnsupportedFormatVersionException;
+import org.primaresearch.io.xml.IOError;
 import org.primaresearch.io.xml.XmlFormatVersion;
 import org.primaresearch.io.xml.XmlModelAndValidatorProvider;
 import org.primaresearch.io.xml.XmlValidator;
 import org.primaresearch.io.xml.variable.XmlVariableFileReader;
+import org.primaresearch.maths.geometry.Point;
 import org.primaresearch.maths.geometry.Polygon;
+import org.primaresearch.shared.variable.DoubleValue;
+import org.primaresearch.shared.variable.StringValue;
 import org.primaresearch.shared.variable.VariableMap;
 import org.primaresearch.text.filter.TextFilter;
 import org.primaresearch.text.filter.TextFilter.TextObjectTypeFilterCallback;
@@ -64,6 +70,10 @@ public class PageConverter {
 	private String gtsidToSet = null;
 	private FormatVersion targetformat = null;
 	private VariableMap textFilterRules = null;
+	private Double xResolution = null;
+	private Double yResolution = null;
+	private String resolutionUnit = null;
+	private boolean transformCoords = false;
 	
 	/**
 	 * Main function
@@ -85,6 +95,7 @@ public class PageConverter {
 		String gtsidPattern = null;
 		String textFilterRuleFile = null;
 		String negCoordsMode = null;
+		
 		for (int i=0; i<args.length; i++) {
 			if ("-source-xml".equals(args[i])) {
 				i++;
@@ -118,6 +129,26 @@ public class PageConverter {
 			else if ("-neg-coords".equals(args[i])) {
 				i++;
 				negCoordsMode = args[i];
+			}
+			else if ("-set-xres".equals(args[i])) {
+				i++;
+				converter.setxResolution(Double.parseDouble(args[i]));
+			}
+			else if ("-set-yres".equals(args[i])) {
+				i++;
+				converter.setyResolution(Double.parseDouble(args[i]));
+			}
+			else if ("-set-res".equals(args[i])) {
+				i++;
+				converter.setxResolution(Double.parseDouble(args[i]));
+				converter.setyResolution(Double.parseDouble(args[i]));
+			}
+			else if ("-set-res-unit".equals(args[i])) {
+				i++;
+				converter.setResolutionUnit(args[i]);
+			}
+			else if ("-transform-coords".equals(args[i])) {
+				converter.setTransformCoords(true);
 			}
 			else {
 				System.err.println("Unknown argument: "+args[i]);
@@ -185,6 +216,13 @@ public class PageConverter {
 		System.out.println("         removeObj - If an object contains one or more points with negative");
 		System.out.println("                     coordinates, remove the whole object. ");
 		System.out.println("         toZero    - Change negative values to 0");
+		System.out.println("");
+		System.out.println("  -set-xres <number>   To set x-resolution value of PAGE output. (optional)");
+		System.out.println("  -set-yres <number>   To set y-resolution value of PAGE output. (optional)");
+		System.out.println("  -set-res <number>    To set x- and y-resolution value of PAGE output. (optional)");
+		System.out.println("  -set-res-unit <PPI|PPCM|other>    To set resolution unit of PAGE output. (optional)");
+		System.out.println("  -transform-coords    Adjust all coords according to resolution");
+		System.out.println("                       and measurement unit. (optional)");
 	}
 	
 	/**
@@ -218,6 +256,18 @@ public class PageConverter {
 			}
 		}
 		
+		//Resolution
+		try {
+			if (xResolution != null)
+				page.getAttributes().get("imageXResolution").setValue(new DoubleValue(xResolution.doubleValue()));
+			if (yResolution != null)
+				page.getAttributes().get("imageYResolution").setValue(new DoubleValue(yResolution.doubleValue()));
+			if (resolutionUnit != null)
+				page.getAttributes().get("imageResolutionUnit").setValue(new StringValue(resolutionUnit));
+		} catch (Exception exc) {
+			exc.printStackTrace();
+		}
+		
 		//Text filter
 		if (textFilterRules != null) {
 			runTextFilter(textFilterRules, page);
@@ -241,8 +291,14 @@ public class PageConverter {
 				PageWriter writer = new XmlPageWriter_Alto(validator);
 		
 				try {
-					if (!writer.write(page, new FileTarget(new File(targetFilename))))
+					if (!writer.write(page, new FileTarget(new File(targetFilename)))) {
 						System.err.println("Error writing target ALTO XML file");
+						List<IOError> errors = ((XmlPageWriter_Alto)writer).getErrors();
+						if (errors != null)
+							for (IOError error : errors) {
+								System.err.println(error.getMessage());
+							}
+					}
 				} catch (UnsupportedFormatVersionException e) {
 					System.err.println("Could not save target ALTO XML file: "+targetFilename);
 					e.printStackTrace();
@@ -263,6 +319,10 @@ public class PageConverter {
 					exc.printStackTrace();
 				}
 			}
+			
+			if (transformCoords)
+				transformCoordinates(page);
+				
 			//Write PAGE
 			try {
 				if (!PageXmlInputOutput.writePage(page, targetFilename))
@@ -495,5 +555,111 @@ public class PageConverter {
 		}
 	}
 
+	public void setxResolution(Double xResolution) {
+		this.xResolution = xResolution;
+	}
+
+	public void setyResolution(Double yResolution) {
+		this.yResolution = yResolution;
+	}
+
+	public void setResolutionUnit(String resolutionUnit) {
+		this.resolutionUnit = resolutionUnit;
+	}
+
+	/** Transforms coordinates to pixels, if necessary */
+	private void transformCoordinates(Page page) {
+		if (xResolution == null || yResolution == null || page.getMeasurementUnit() == null || page.getMeasurementUnit().equals(MeasurementUnit.PIXEL))
+			return; //Can't transform or no need
+
+		//Determine factor
+		// Get image resolution in PPI
+		double xres = xResolution;
+		double yres = yResolution;
+		if (resolutionUnit != null && "PPCM".equals(resolutionUnit)) {
+			xres *= 2.54;
+			yres *= 2.54;
+		}
+		
+		//Pixel size in measurement unit
+		double pixelWidth = 1.0;
+		double pixelHeight = 1.0;
+		if (page.getMeasurementUnit().equals(MeasurementUnit.INCH_BY_1200)) {
+			pixelWidth = 1200.0 / xres;
+			pixelHeight = 1200.0 / yres;
+		}
+		else if (page.getMeasurementUnit().equals(MeasurementUnit.MM_BY_10)) {
+			pixelWidth = 10.0 * 25.4 / xres;
+			pixelHeight = 10.0 * 25.4 / yres;
+		}
+		
+		scaleCoords(page, 1.0 / pixelWidth, 1.0 / pixelHeight);		
+	}
+	
+	private void scaleCoords(Page page, double xFactor, double yFactor) {
+		//Page size
+		page.getLayout().setSize((int)(page.getLayout().getWidth() * xFactor), (int)(page.getLayout().getHeight() * yFactor));
+		//Border, print space
+		scaleCoords(page.getLayout().getBorder(), xFactor, yFactor);
+		scaleCoords(page.getLayout().getPrintSpace(), xFactor, yFactor);
+		//Regions
+		for (int i=0; i<page.getLayout().getRegionCount(); i++)
+			scaleRegionCoords(page.getLayout().getRegion(i), xFactor, yFactor);
+	}
+	
+	private void scaleCoords(GeometricObject obj, double xFactor, double yFactor) {
+		if (obj == null)
+			return;
+		
+		scaleCoords(obj.getCoords(), xFactor, yFactor);
+	}
+	
+	private void scaleCoords(Polygon polygon, double xFactor, double yFactor) {
+		if (polygon == null)
+			return;
+		
+		Point p;
+		for (int i=0; i<polygon.getSize(); i++) {
+			p = polygon.getPoint(i);
+			p.x = (int)(p.x * xFactor);
+			p.y = (int)(p.y * xFactor);
+		}		
+	}
+	
+	private void scaleRegionCoords(Region region, double xFactor, double yFactor) {
+		//Self
+		scaleCoords(region, xFactor, yFactor);
+		
+		//Nested regions
+		for (int i=0; i<region.getRegionCount(); i++)
+			scaleRegionCoords(region.getRegion(i), xFactor, yFactor);
+		
+		//Text lines
+		if (region instanceof TextRegion) {
+			LowLevelTextContainer container = (LowLevelTextContainer)region;
+			for (int i=0; i<container.getTextObjectCount(); i++) {
+				TextLine textLine = (TextLine)container.getTextObject(i);
+				scaleLowLevelTextObject(textLine, xFactor, yFactor);
+				//Baseline
+				scaleCoords(textLine.getBaseline(), xFactor, yFactor);
+			}
+		}
+	}
+	
+	private void scaleLowLevelTextObject(LowLevelTextObject obj, double xFactor, double yFactor) {
+		//Self
+		scaleCoords(obj, xFactor, yFactor);
+		
+		//Children
+		if (obj instanceof LowLevelTextContainer) {
+			LowLevelTextContainer container = (LowLevelTextContainer)obj;
+			for (int i=0; i<container.getTextObjectCount(); i++)
+				scaleLowLevelTextObject(container.getTextObject(i), xFactor, yFactor);
+		}
+	}
+
+	public void setTransformCoords(boolean transformCoords) {
+		this.transformCoords = transformCoords;
+	}
 	
 }
