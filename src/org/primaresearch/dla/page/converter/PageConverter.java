@@ -478,6 +478,8 @@ public class PageConverter {
 		List<Region> toDelete = new LinkedList<Region>();
 		for (int i=0; i<layout.getRegionCount(); i++) {
 			Region region = layout.getRegion(i);
+			if (region == null)
+				continue;
 			if (hasNegativeCoordinates(region.getCoords())) {
 				if (deleteObjects)
 					toDelete.add(region);
